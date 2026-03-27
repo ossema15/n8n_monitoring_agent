@@ -174,8 +174,8 @@ The safety check node resolves machine names to IPs automatically:
 
 | Input | Resolved IP |
 |-------|------------|
-| `machine1`, `machine 1`, `pc1` | `192.168.0.20` |
-| `machine2`, `machine 2`, `pc2` | `192.168.0.252` |
+| `machine1`, `machine 1`, `pc1` | `PC1 IP` |
+| `machine2`, `machine 2`, `pc2` | `PC2 IP` |
 
 ### WinRM Proxy
 
