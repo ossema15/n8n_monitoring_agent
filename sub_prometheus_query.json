@@ -1,0 +1,116 @@
+{
+  "name": "sub_prometheus_query",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "promql"
+            },
+            {
+              "name": "time range"
+            }
+          ]
+        }
+      },
+      "id": "006d30ca-1499-4a6d-a892-dff23d260b85",
+      "name": "Workflow Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=http://prometheus:9090/api/v1/{{ $json.time_range ? 'query_range' : 'query' }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $json.promql }}"
+            },
+            {
+              "name": "start",
+              "value": "={{ $json.time_range ? new Date(Date.now() - 3600000).toISOString() : '' }}"
+            },
+            {
+              "name": "end",
+              "value": "={{ $json.time_range ? new Date().toISOString() : '' }}"
+            },
+            {
+              "name": "step",
+              "value": "={{ $json.time_range ? '60' : '' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "1658e8da-dced-4704-ada4-8960018ce7dd",
+      "name": "Prometheus HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const result = $input.item.json;\nconst data = result.data;\n\nif (!data || result.status !== 'success') {\n  return [{ json: { error: 'Prometheus query failed', raw: result } }];\n}\n\nconst resultType = data.resultType;\nconst results = data.result || [];\n\nif (results.length === 0) {\n  return [{ json: { message: 'Query returned no data. The metric may not exist or the target is down.', promql: $('Workflow Input').item.json.promql } }];\n}\n\n// Format for the AI agent to read easily\nlet formatted;\nif (resultType === 'vector') {\n  formatted = results.map(r => {\n    const labels = Object.entries(r.metric)\n      .filter(([k]) => k !== '__name__')\n      .map(([k,v]) => `${k}=${v}`).join(', ');\n    const value = parseFloat(r.value[1]);\n    return `  ${r.metric.__name__ || 'value'}{${labels}} = ${value.toFixed(4)}`;\n  }).join('\\n');\n} else if (resultType === 'matrix') {\n  formatted = results.map(r => {\n    const labels = Object.entries(r.metric)\n      .filter(([k]) => k !== '__name__')\n      .map(([k,v]) => `${k}=${v}`).join(', ');\n    const latest = r.values[r.values.length - 1];\n    const latestVal = parseFloat(latest[1]).toFixed(4);\n    return `  ${r.metric.__name__ || 'value'}{${labels}} latest=${latestVal} (${r.values.length} samples)`;\n  }).join('\\n');\n} else {\n  formatted = JSON.stringify(data.result, null, 2);\n}\n\nreturn [{\n  json: {\n    result_type: resultType,\n    series_count: results.length,\n    formatted_result: formatted,\n    message: `Prometheus query successful (${results.length} series, type=${resultType}):\\n${formatted}`\n  }\n}];"
+      },
+      "id": "1cc9a9f6-c094-4199-bf9f-2c3f0772cb26",
+      "name": "Format Prometheus Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Workflow Input": {
+      "main": [
+        [
+          {
+            "node": "Prometheus HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prometheus HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Format Prometheus Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timeSavedMode": "fixed",
+    "timezone": "Africa/Tunis",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "5d7f9ce4-0d41-4ffd-8b3e-b09136c63c0a",
+  "meta": {
+    "instanceId": "50308aa0ca9db4ba74cc3bda7f278c3f4d12a95c8247710f46fc69ed181bf709"
+  },
+  "id": "n9Fdp1DgqFUlq0Hw",
+  "tags": []
+}

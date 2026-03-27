@@ -1,0 +1,161 @@
+{
+  "name": "sub_winrm_execute",
+  "nodes": [
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "target_host"
+            },
+            {
+              "name": "command"
+            },
+            {
+              "name": "command_type"
+            }
+          ]
+        }
+      },
+      "id": "471c803a-15d8-4b43-bff2-f8d46786ae5d",
+      "name": "Workflow Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -768,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Read inputs — handle both targethost and target_host\nconst rawHost = (\n  $json.target_host || \n  $json.targethost || \n  $json.targetHost || \n  ''\n).toString().toLowerCase().trim();\n\nconst command = (\n  $json.command || \n  $json.cmd || \n  ''\n).toString().trim();\n\nconst commandType = (\n  $json.command_type || \n  $json.commandtype || \n  $json.commandType || \n  'powershell'\n).toString().toLowerCase();\n\n// Hostname to IP mapping\nconst hostMap = {\n  'machine1': '192.168.0.20',\n  'machine 1': '192.168.0.20',\n  'pc1': '192.168.0.20',\n  '192.168.0.20': '192.168.0.20',\n  'machine2': '192.168.0.252',\n  'machine 2': '192.168.0.252',\n  'pc2': '192.168.0.252',\n  '192.168.0.252': '192.168.0.252'\n};\n\nconst targetHost = hostMap[rawHost] || rawHost || null;\n\nif (!targetHost) {\n  return [{ json: {\n    blocked: true,\n    reason: `Unknown target host: \"${rawHost}\". Known hosts: machine1 , machine2 .`,\n    command\n  }}];\n}\n\nif (!command) {\n  return [{ json: {\n    blocked: true,\n    reason: 'No command was provided.',\n    command: ''\n  }}];\n}\n// Safety blocklist — exact phrase matching only\nconst blocklist = [\n  'format-volume',\n  'format c:',\n  'del /s /q',\n  'rm -rf',\n  'remove-item -recurse -force',\n  'fdisk',\n  'diskpart',\n  'reg delete',\n  'rd /s /q',\n  'rmdir /s',\n  'cipher /w',\n  'bcdedit',\n  'shutdown /r',\n  'shutdown /s',\n  'restart-computer'\n];\n\n\nconst isDangerous = blocklist.some(b => \n  command.toLowerCase().includes(b.toLowerCase())\n);\n\nif (isDangerous) {\n  return [{ json: {\n    blocked: true,\n    reason: 'Command blocked by safety filter — potentially destructive operation detected.',\n    command\n  }}];\n}\n// Encode for PowerShell -EncodedCommand\nconst encoded = Buffer.from(command, 'utf16le').toString('base64');\n\nreturn [{\n  json: {\n    target_host: targetHost,\n    winrm_url: `http://${targetHost}:5985/wsman`,\n    command: command,                          // keep raw for reference\n    command_json_safe: JSON.stringify(command), // ← add this\n    command_type: commandType,\n    encoded_command: encoded,\n    blocked: false\n  }\n}];"
+      },
+      "id": "f5f41962-1555-46f6-8ec7-9a1e79c8a79e",
+      "name": "Prepare & Safety Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "not-blocked",
+              "leftValue": "={{ $json.blocked }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "44ee41cd-622c-41e5-be76-a92996f9c549",
+      "name": "Check Not Blocked",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -336,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    success: false,\n    blocked: true,\n    message: `🚫 Command blocked: ${$('Prepare & Safety Check').item.json.reason}\\n\\nBlocked command: ${$('Prepare & Safety Check').item.json.command}`\n  }\n}];"
+      },
+      "id": "2a61bdb0-7411-4151-a71d-c8ea0698d0ce",
+      "name": "Return Blocked Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:5001/run",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"target_host\": \"{{ $('Prepare & Safety Check').first().json.target_host }}\",\n  \"command\": \"{{ $('Prepare & Safety Check').first().json.encoded_command }}\",\n  \"command_type\": \"powershell_encoded\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        -64,
+        -48
+      ],
+      "id": "8afda445-aa6d-4bc0-b10e-441729477daf",
+      "name": "HTTP Request"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Workflow Input": {
+      "main": [
+        [
+          {
+            "node": "Prepare & Safety Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare & Safety Check": {
+      "main": [
+        [
+          {
+            "node": "Check Not Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Not Blocked": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Blocked Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "03ca2115-8531-4754-92f5-e8907d5191a9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "50308aa0ca9db4ba74cc3bda7f278c3f4d12a95c8247710f46fc69ed181bf709"
+  },
+  "id": "ZcrbDFyVfKzq9yyK",
+  "tags": []
+}

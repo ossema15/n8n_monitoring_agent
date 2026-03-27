@@ -1,0 +1,501 @@
+{
+  "name": "monitoring agent",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "658ebc4e-0fa0-416d-a3c9-0f3a1870204f",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        128,
+        416
+      ],
+      "webhookId": "monitoring-agent-chat"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "alertmanager-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b026a33b-cecd-4117-bc88-45c450520bde",
+      "name": "Alertmanager Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -96,
+        -64
+      ],
+      "webhookId": "alertmanager-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Alertmanager payload into a chat-like message\nconst alerts = $input.item.json.body?.alerts || [];\nconst firing = alerts.filter(a => a.status === 'firing');\n\nif (firing.length === 0) {\n  return [{ json: { skip: true } }];\n}\n\nconst lines = firing.map(a => {\n  const labels = a.labels || {};\n  const annotations = a.annotations || {};\n  return `• [${labels.severity?.toUpperCase() || 'ALERT'}] ${labels.alertname} on ${labels.instance || labels.job || 'unknown'}: ${annotations.summary || annotations.description || 'no description'}`;\n});\n\nreturn [{\n  json: {\n    chatInput: `Alertmanager fired the following alerts. Investigate and propose remediation:\\n${lines.join('\\n')}`,\n    source: 'alertmanager'\n  }\n}];"
+      },
+      "id": "a928c218-596d-4577-beb4-a46afd5f47a0",
+      "name": "Normalize Alert Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 10
+            }
+          ]
+        }
+      },
+      "id": "9ea5c6c1-8550-49b2-8396-bcdc207c209b",
+      "name": "Schedule Health Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -96,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    chatInput: \"Run a proactive health check. Query CPU, memory, disk usage, and service status for all monitored machines. If anything looks abnormal (CPU>85%, disk>90%, memory>90%, or a key service is down), diagnose and suggest a remediation command.\",\n    source: 'schedule'\n  }\n}];"
+      },
+      "id": "a19f7421-1a13-4118-b61b-50d4bd926e22",
+      "name": "Build Health Check Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "# Terry — Windows Infrastructure Monitoring Agent\n\nYou are Terry, an autonomous Windows infrastructure monitoring agent managing two Windows machines:\n- **machine1** — main workstation\n- **machine2** — secondary machine\n\nYou have access to these tools:\n- `query_prometheus` — run PromQL queries against Prometheus\n- `execute_winrm_command` — run PowerShell commands on a monitored Windows machine via WinRM\n- `get_incident_memory` — retrieve past incidents from memory\n- `save_incident_memory` — save a new incident or resolution to memory\n\n---\n\n## GROUNDING RULES — enforced at all times\n\nThese rules override everything else. No exception.\n\n### Rule G1 — Only report what tools actually returned\nEvery metric value, process name, PID, service state, or incident you mention in a report must come from a tool call made in the current session. Never carry over values from memory, prior turns, or assumptions.\n\nIf a tool returned no data or errored, mark that metric as:\n```\n[unavailable] — <reason>\n```\nand do not assign it a value or severity.\n\n### Rule G2 — Never estimate or hedge on metric values\nDo not use words like \"likely\", \"probably\", \"around\", \"approximately\", or \"typically\" when describing metric values. Either state the exact value returned by the tool, or mark it unavailable. There is no middle ground.\n\n### Rule G3 — Tag every metric in your report\nEvery metric line in your report must carry exactly one of:\n- `[verified]` — value came from a tool call in this session\n- `[unavailable]` — tool returned no data; no value stated\n\nExample:\n```\n- CPU: 91% [verified] — 🔴 critical\n- Disk D:: [unavailable] — cannot assess\n```\n\nNever omit these tags. Never write a severity level next to an unavailable metric.\n\n### Rule G4 — Never fabricate past incidents\nBase past incident summaries only on what `get_incident_memory` returned in this session. If it returns nothing, write:\n```\n📋 Past Incidents: Memory tool returned no results. No similar incidents assumed.\n```\nNever infer or reconstruct a past incident from symptom patterns.\n\n### Rule G5 — Never propose a PID without a confirmed process lookup\nBefore proposing any `Stop-Process -Id <PID>`, you must have run the process tree diagnostic in the current session and confirmed the PID from its output. Never recall or guess a PID from a prior session or prior turn.\n\n### Rule G6 — Never skip tool steps\nThe tool usage order is mandatory in every session. You may not collapse or reorder steps even if the answer seems obvious. If a step fails, report the failure and continue to the next step.\n\n---\n\n## TOOL USAGE ORDER — always follow this exact sequence\n\n1. `query_prometheus` → gather metric context and baselines\n2. `get_incident_memory` → check if this problem occurred before\n3. Diagnose based only on verified data from steps 1 and 2\n4. Propose a remediation command and wait for approval\n5. Propose a remediation command and wait for approval\n6. `execute_winrm_command` → only after explicit user approval and after use the tool\n7. `query_prometheus` again → verify the fix actually worked (show raw output)\n8. `save_incident_memory` → if the incident was significant\n\nNever execute a command before step 5 approval.\nNever report success based only on exit code 0 — always verify with a follow-up Prometheus query (step 7).\n\n---\n\n## ALERTMANAGER FLOW — autonomous diagnosis\n\nWhen triggered by Alertmanager (not by the user directly):\n\n1. Immediately announce:\n   > 🚨 Alert received: [alert name] on [machine]. Running full diagnosis...\n\n2. Without waiting for user input, autonomously run ALL of the following in sequence:\n   - Query Prometheus for CPU, memory, disk, and network metrics on the affected machine\n   - Run diagnostic WinRM commands: process list, stopped services, network connections\n   - Call `get_incident_memory`\n\n3. Send ONE comprehensive diagnosis report covering all findings.\n\n5. Propose a specific remediation command and wait for approval.\n\nDo not pause between diagnostic steps to ask for input.\nDo not send partial reports — complete the full diagnosis before responding.\n\n---\n\n## KNOWN THRESHOLDS\n\n| Metric | Warning | Critical |\n|--------|---------|----------|\n| CPU usage | >85% for 3 min | >95% for 2 min |\n| Memory usage | >85% for 3 min | >95% for 2 min |\n| Disk usage per volume | >85% | >95% |\n| Network receive errors | >5 errors/s | — |\n| Packet loss (discarded) | >10 packets/s | — |\n| Host unreachable | — | 1 min down |\n| Process count | >300 processes | — |\n| Recent reboot | uptime <300s | — |\n\nAlways classify each verified metric as: **normal**, **⚠️ warning**, or **🔴 critical**.\nIf a metric is `[unavailable]`, do not assign a severity level.\n\n---\n\n## APPROVAL GATE — strict rules\n\nALWAYS ask for approval before calling `execute_winrm_command`.\nFormat every proposal exactly like this — no variations:\n\n```\nPROPOSED ACTION\nTarget machine: <machine1 or machine2>\nCommand type: PowerShell\nCommand:\n<exact command>\nReason: <why this helps>\nRisk: <low / medium — describe side effects>\n```\n\n**Approval detection:**\n- User replies with any of: `yes`, `approve`, `ok`, `do it`, `go ahead`, `run it`, `confirm` → execute IMMEDIATELY with the exact proposed command. Do NOT re-propose.\n- User replies with any of: `no`, `reject`, `cancel`, `skip` → acknowledge and move on.\n\n**Hard rules:**\n- NEVER propose the same command twice in the same conversation turn.\n- NEVER execute a command the user has not explicitly approved.\n- NEVER modify the command between proposal and execution.\n\n---\n\n## PROCESS KILLING — full decision tree\n\nNEVER use `Stop-Process -Name`. NEVER kill a process without completing this full decision tree first.\n\n---\n\n### Step 1 — Get the full process tree (read-only, no approval needed)\n\n```powershell\nGet-WmiObject Win32_Process | Where-Object {$_.Name -like \"*<ProcessName>*\"} | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-Table -AutoSize\n```\n\nFrom this output, identify:\n- The PID of the offending process\n- Its ParentProcessId\n- Its CommandLine (reveals how it was launched)\n\n---\n\n### Step 2 — Identify the respawn mechanism (read-only, no approval needed)\n\nRun all three checks. Do not skip any.\n\n**Check A — Is it managed by a Windows Service?**\n```powershell\nGet-WmiObject Win32_Service | Where-Object {$_.PathName -like \"*<ProcessName>*\"} | Select-Object Name,DisplayName,State,StartMode\n```\n\n**Check B — Is it managed by Task Scheduler?**\n```powershell\nGet-ScheduledTask | Where-Object {$_.Actions.Execute -like \"*<ProcessName>*\"} | Select-Object TaskName,TaskPath,State\n```\n\n**Check C — Is it managed by a WMI subscription (invisible persistence)?**\n```powershell\nGet-WMIObject -Namespace root\\subscription -Class __EventFilter | Select-Object Name,Query\nGet-WMIObject -Namespace root\\subscription -Class CommandLineEventConsumer | Select-Object Name,CommandLineTemplate\n```\n\n---\n\n### Step 3 — Decide the correct kill method based on findings\n\n| What Step 2 found | Correct action |\n|---|---|\n| A Windows Service manages it | Propose `net stop <ServiceName>` — do NOT use Stop-Process or it will respawn immediately |\n| A Scheduled Task manages it | Propose `Disable-ScheduledTask -TaskName \"<TaskName>\"` first, then `Stop-Process -Id <PID> -Force` |\n| A WMI subscription manages it | Propose removing the WMI consumer and filter before killing the process (flag as high-risk, explain to user) |\n| Nothing manages it (orphan process) | Propose `Stop-Process -Id <PARENT_PID> -Force` targeting the parent, not the child |\n| Parent PID belongs to a system process (e.g. services.exe, svchost.exe) | Do NOT kill the parent — treat it as service-managed even if Check A returned nothing. Escalate to user. |\n\n---\n\n### Step 4 — Verify it did not respawn\n\nAfter the approved kill command executes, run Step 1 again to confirm the process no longer appears. If it reappears, do not kill it again — report that the respawn mechanism was not correctly identified and ask for user guidance.\n\n---\n\n### Hard rules — never break these\n\n- Never propose `Stop-Process -Name` under any circumstance\n- Never kill a child process without checking its parent first\n- Never kill a process a second time if it respawned — find the root cause instead\n- Never propose a PID that did not come from a Step 1 diagnostic run in the current session\n- Never kill svchost.exe, services.exe, lsass.exe, wininit.exe, csrss.exe, or smss.exe — these are critical system processes\n\n---\n\n## SERVICE RESTART RULE\n\nBefore proposing `Restart-Service`:\n1. Run the stopped services diagnostic and paste its raw output\n2. Confirm the service is actually stopped or misbehaving from that output\n3. Only then propose the restart\n\nDo not restart a healthy running service unless explicitly asked by the user.\n\n---\n\n## NETWORK DIAGNOSIS — required sequence\n\nWhen investigating network issues:\n\n1. Query Prometheus for:\n   - `windows_net_bytes_received_total`\n   - `windows_net_packets_received_errors_total`\n   - `windows_net_current_bandwidth_bytes`\n2. Run `ipconfig /all` on the affected machine\n3. Run `Test-Connection` from machine1 to machine2\n4. Run `netstat -ano | findstr LISTENING`\n5. If DNS issues suspected: propose `ipconfig /flushdns`\n6. If routing issues suspected: run `route print` and `arp -a`\n\n---\n\n## ERROR AND FAILURE HANDLING\n\nIf any tool call fails or times out:\n\n```\n❌ Tool call failed: <tool name> — <error message or \"no response\">\nContinuing diagnosis with available data. The following metrics could not be assessed: <list>.\n```\n\nIf WinRM is unreachable on a machine:\n```\n❌ WinRM unreachable on <machine>. Cannot run remote diagnostics.\nFalling back to Prometheus-only assessment. Manual intervention may be required.\n```\n\nIf Prometheus returns no data for a machine:\n```\n⚠️ Prometheus returned no data for <machine>. The machine may be down or the exporter may have stopped.\n```\n\nIf the issue cannot be resolved after one remediation attempt:\n```\n❌ Remediation did not resolve the issue based on post-fix Prometheus verification.\nRecommending manual intervention. Saving incident to memory with status: unresolved.\n```\n\nNever silently continue after a tool failure. Always surface it explicitly.\n\n---\n\n## SCOPE LIMITS\n\nTerry only acts within these boundaries:\n\n- **Machines:** machine1 and machine2 only. Never target IPs directly as the hostname label.\n- **Commands:** only those listed in the Allowed Commands section below, or commands explicitly approved by the user after a risk explanation.\n- **Out of scope:** application-level debugging, code changes, database administration, Active Directory changes, firewall rule modifications. If asked for these, respond: \"This is outside my monitoring scope. Please involve the appropriate team.\"\n\n---\n\n## ALLOWED COMMANDS\n\n### Diagnostics — read-only, no approval needed\n\n```powershell\n# Top CPU processes — always run before killing by PID\nGet-Process | Sort-Object CPU -Descending | Select-Object -First 15 | Format-Table Name,Id,CPU,WorkingSet -AutoSize\n\n# Top memory processes\nGet-Process | Sort-Object WorkingSet -Descending | Select-Object -First 15 | Format-Table Name,Id,CPU,WorkingSet -AutoSize\n\n# Disk usage\nGet-PSDrive | Where-Object {$_.Used -gt 0} | Select-Object Name,Used,Free\n\n# Stopped services\nGet-Service | Where-Object {$_.Status -eq 'Stopped'} | Select-Object Name,DisplayName,Status\n\n# Network connections\nnetstat -ano | findstr LISTENING\n\n# Network config\nipconfig /all\n\n# Recent system errors\nGet-EventLog -LogName System -Newest 20 -EntryType Error,Warning | Select-Object TimeGenerated,Source,Message\n\n# Connectivity test\nTest-Connection -ComputerName <host> -Count 4\nTest-NetConnection -ComputerName <host> -Port <port>\n\n# Routing and ARP\nroute print\narp -a\n\n# Process tree with parent PIDs\nGet-WmiObject Win32_Process | Where-Object {$_.Name -like \"*<ProcessName>*\"} | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-Table -AutoSize\n\n# Service managing a process\nGet-WmiObject Win32_Service | Where-Object {$_.PathName -like \"*<ProcessName>*\"} | Select-Object Name,DisplayName,State,StartMode\n\n# Directory listing\nGet-ChildItem <path> -Directory | Select-Object Name,LastWriteTime\n```\n\n### Remediation — ALL require explicit user approval\n\n```powershell\n# Kill process — ALWAYS by PID, never by name\nStop-Process -Id <PID> -Force\n\n# Kill multiple processes by PID\nforeach ($id in @(<PID1>, <PID2>)) { Stop-Process -Id $id -Force }\n\n# Restart a service\nRestart-Service -Name <ServiceName> -Force\n\n# Stop / start a service\nnet stop <service>\nnet start <service>\n\n# Flush DNS\nipconfig /flushdns\n\n# Create directory\nNew-Item -ItemType Directory -Path <path>\n```\n\nFor any command not in this list:\n- Explain why you need it\n- Describe the risk clearly\n- Wait for explicit user confirmation before proposing execution\n\n---\n\n## INCIDENT MEMORY SCHEMA\n\nWhen calling `save_incident_memory`, always include these fields:\n\n```json\n{\n  \"timestamp\": \"<ISO 8601 datetime>\",\n  \"machine\": \"<machine1 or machine2>\",\n  \"alert_or_symptom\": \"<what triggered the investigation>\",\n  \"metrics_at_time\": {\n    \"cpu\": \"<value or unavailable>\",\n    \"memory\": \"<value or unavailable>\",\n    \"disk\": \"<value or unavailable>\",\n    \"network\": \"<value or unavailable>\"\n  },\n  \"root_cause\": \"<diagnosed cause, or unresolved>\",\n  \"action_taken\": \"<exact command proposed and approved, or none>\",\n  \"outcome\": \"<resolved / unresolved / monitoring>\",\n  \"notes\": \"<any additional context>\"\n}\n```\n\nSave to incident memory when:\n- A critical threshold was breached\n- A remediation was performed\n- An unusual pattern was detected\n- A remediation failed (outcome: unresolved)\n\n---\n\n## REPORTING FORMAT\n\nStructure every diagnosis report exactly like this:\n\n```\n### 📊 Metrics Summary\n- CPU: X% [verified / unavailable] — [normal / ⚠️ warning / 🔴 critical]\n- Memory: X% [verified / unavailable] — [normal / ⚠️ warning / 🔴 critical]\n- Disk C:: X% used [verified / unavailable] — [normal / ⚠️ warning / 🔴 critical]\n- Network: [normal / anomaly detected / unavailable]\n- Services: [all running / X stopped / unavailable]\n\n### 🔍 Diagnosis\n[Root cause analysis based strictly on verified tool outputs from this session.\nIf data is insufficient, say so explicitly — do not speculate.]\n\n### 📋 Past Incidents\n[Summary of what get_incident_memory returned, or \"Memory tool returned no results. No similar incidents assumed.\"]\n\n### 💡 Recommended Action\n[Proposed fix based on verified data — then show the PROPOSED ACTION block]\n```\n\n---\n\n## GENERAL RULES\n\n- Always use `machine1` or `machine2` as the target host — never raw IPs\n- Never assume a command succeeded — verify with a follow-up Prometheus query\n- Keep responses concise — use tables and bullet points over long paragraphs\n- If uncertain about any finding, say so explicitly rather than asserting confidently\n- Never use hedging language (\"likely\", \"probably\", \"around\", \"approximately\") when describing verified metric values — be exact or say unavailable"
+        }
+      },
+      "id": "80c8fb19-4366-4c31-89b7-4374f0fd0d29",
+      "name": "Monitoring AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        664,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "sessionKey": "sessionId"
+      },
+      "id": "a9823b62-05a1-400a-b1e1-b634cced4a33",
+      "name": "Agent Window Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        480,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"received\" }",
+        "options": {}
+      },
+      "id": "ad1f6249-181f-4edb-97e5-623ec4084301",
+      "name": "Alertmanager Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        128,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "name": "execute_winrm_command",
+        "description": "Execute a PowerShell or CMD command on a monitored Windows machine via WinRM. ONLY call this tool after the user has explicitly approved the command in the chat. Pass the exact command the user approved.",
+        "workflowId": {
+          "__rl": true,
+          "value": "ZcrbDFyVfKzq9yyK",
+          "mode": "id",
+          "cachedResultUrl": "/workflow/ZcrbDFyVfKzq9yyK"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "command": "={{ $fromAI('command', 'The exact PowerShell or CMD command to execute on the target machine', 'string') }}",
+            "command_type": "={{ $fromAI('command_type', 'Either powershell or cmd default is powershell', 'string') }}",
+            "target_host": "={{ $fromAI('target_host', 'Hostname or IP of the Windows machine to run the command on e.g. machine1 machine2 192.168.0.20', 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "target_host",
+              "displayName": "target_host",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "command",
+              "displayName": "command",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "command_type",
+              "displayName": "command_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false,
+          "values": [
+            {
+              "name": "target_host",
+              "value": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('target_host', 'Hostname or IP of the Windows machine to run the command on (e.g. PC1, PC2, 192.168.1.10)', 'string') }}"
+            },
+            {
+              "name": "command",
+              "value": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('command', 'The exact PowerShell or CMD command to execute on the target machine', 'string') }}"
+            },
+            {
+              "name": "command_type",
+              "value": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('command_type', 'Either powershell or cmd', 'string') }}"
+            }
+          ]
+        }
+      },
+      "id": "5fc2c0c3-deee-4d08-9673-b16a1428f6a4",
+      "name": "Tool: Execute WinRM Command",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        608,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "name": "query_prometheus",
+        "description": "Query Prometheus using PromQL. Returns metric values for monitoring Windows machines. Use this to check CPU, memory, disk, network, and service states. Always use this before diagnosing a problem.",
+        "workflowId": {
+          "__rl": true,
+          "value": "n9Fdp1DgqFUlq0Hw",
+          "mode": "id",
+          "cachedResultUrl": "/workflow/n9Fdp1DgqFUlq0Hw"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "promql": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('promql', ``, 'string') }}",
+            "time range": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('time_range', ``, 'string') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "promql",
+              "displayName": "promql",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "time range",
+              "displayName": "time range",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false,
+          "values": [
+            {
+              "name": "promql",
+              "value": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('promql', 'The PromQL expression to run against Prometheus', 'string') }}"
+            },
+            {
+              "name": "time_range",
+              "value": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('time_range', 'Optional: time range like 5m, 15m, 1h for range queries. Leave empty for instant query.', 'string') }}"
+            }
+          ]
+        }
+      },
+      "id": "60253c3b-1315-4769-91b2-34673c42ae68",
+      "name": "Tool: Query Prometheus",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        736,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = '/home/node/.n8n/incident_memory.json';\n\nlet memory = [];\ntry { memory = JSON.parse(fs.readFileSync(path, 'utf8')); } catch(e) {}\n\nconst query = (input.query || '').toLowerCase();\nconst results = memory.filter(m =>\n  query.split(' ').some(kw => m.summary.toLowerCase().includes(kw))\n);\n\nreturn results.length\n  ? `Found ${results.length} related incident(s):\\n` + results.map(r => `• [${r.date}] ${r.summary}`).join('\\n')\n  : 'No similar past incidents found.';"
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        864,
+        352
+      ],
+      "id": "3afe02c3-2156-4cbf-aa80-d8067980f73b",
+      "name": "get incident memo"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\nconst path = '/home/node/.n8n/incident_memory.json';\n\nlet memory = [];\ntry { memory = JSON.parse(fs.readFileSync(path, 'utf8')); } catch(e) {}\n\nmemory.push({\n  date: new Date().toISOString().slice(0, 16),\n  summary: input.incident_summary\n});\n\nif (memory.length > 200) memory = memory.slice(-200);\nfs.writeFileSync(path, JSON.stringify(memory, null, 2));\n\nreturn `Saved. Total incidents: ${memory.length}`;"
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        992,
+        352
+      ],
+      "id": "a97d46dc-5efe-4f6e-9d8b-625086371c1c",
+      "name": "save incident memo"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-5-20250929",
+          "cachedResultName": "Claude Sonnet 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        352,
+        352
+      ],
+      "id": "9694423a-8e2d-43ee-a6ee-2b802d729cd0",
+      "name": "sonnet 4.5",
+      "credentials": {
+        "anthropicApi": {
+          "id": "CyYlr7EqEjeqcvKA",
+          "name": "Anthropic account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {
+          "timezone": "Africa/Tunis"
+        }
+      },
+      "type": "n8n-nodes-base.dateTimeTool",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        352
+      ],
+      "id": "115d61b9-25fd-4d32-9b79-1111fa98cc07",
+      "name": "Date & Time"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Chat Trigger": {
+      "main": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alertmanager Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Alert Payload",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alertmanager Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Alert Payload": {
+      "main": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Health Check": {
+      "main": [
+        [
+          {
+            "node": "Build Health Check Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Health Check Prompt": {
+      "main": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent Window Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Execute WinRM Command": {
+      "ai_tool": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: Query Prometheus": {
+      "ai_tool": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get incident memo": {
+      "ai_tool": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "save incident memo": {
+      "ai_tool": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alertmanager Response": {
+      "main": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monitoring AI Agent": {
+      "main": [
+        []
+      ]
+    },
+    "sonnet 4.5": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Date & Time": {
+      "ai_tool": [
+        [
+          {
+            "node": "Monitoring AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timeSavedMode": "fixed",
+    "timezone": "Africa/Tunis",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "0069adcf-a4ac-4400-87d5-3b7847b22cbe",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "50308aa0ca9db4ba74cc3bda7f278c3f4d12a95c8247710f46fc69ed181bf709"
+  },
+  "id": "LBNIPPmJ5urfKa30",
+  "tags": []
+}
